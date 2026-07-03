@@ -5,6 +5,24 @@ Patients book appointments and describe symptoms in advance; an LLM (Groq) gener
 with urgency level for the doctor; after the visit the doctor's notes are converted into a patient-friendly
 summary. Both sides get email notifications (Brevo) and Google Calendar sync.
 
+## Live deployment
+
+| Service | URL |
+|---|---|
+| **Frontend (Vercel)** | https://healthcare-appointment-manager-rose.vercel.app |
+| **Backend API (Render)** | https://healthcare-appointment-manager-tpdf.onrender.com/api |
+| **Backend health check** | https://healthcare-appointment-manager-tpdf.onrender.com/api/health |
+| **Source repository (GitHub)** | https://github.com/anshmaurya264209/healthcare-appointment-manager |
+
+**Notes for reviewers:**
+- The backend is on Render's free tier, which spins down after inactivity — the first request after
+  idle may take ~30–50 seconds to wake up. Subsequent requests are fast.
+- Google Calendar sync is in Google's OAuth "Testing" mode, so only pre-approved test-user Google
+  accounts can complete the "Connect Google Calendar" flow. Booking, cancellation, email notifications,
+  and AI summaries all work independently of calendar connection status.
+- Seeded admin login: `admin@clinic.com` / `Admin@123` (change immediately if this is a shared/public
+  deployment — see `backend/utils/seedAdmin.js` and the `npm run seed` step below).
+
 ## Stack
 
 | Layer | Tech |
@@ -36,6 +54,7 @@ healthcare-appointment-manager/
 │   ├── utils/seedAdmin.js   creates the first admin account
 │   └── server.js
 ├── frontend/
+│   ├── vercel.json          SPA rewrite (fixes 404 on direct/refresh navigation to client routes)
 │   └── src/
 │       ├── api/axios.js
 │       ├── context/AuthContext.jsx
@@ -219,11 +238,19 @@ Model is configurable via `GROQ_MODEL` (defaults to `llama-3.3-70b-versatile`).
    add your test users (patient/doctor emails you'll log in with during development).
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
    - Application type: Web application
-   - Authorized redirect URI: `http://localhost:5000/api/calendar/oauth/callback` (matches `GOOGLE_REDIRECT_URI`)
-5. Copy the generated **Client ID** and **Client Secret** into the backend `.env`.
-6. In the app, a logged-in user clicks **"Connect Google Calendar"** on the Home page → redirected to Google
+   - Authorized redirect URI (local dev): `http://localhost:5000/api/calendar/oauth/callback`
+   - Authorized redirect URI (production): `https://healthcare-appointment-manager-tpdf.onrender.com/api/calendar/oauth/callback`
+   - Both must match `GOOGLE_REDIRECT_URI` **exactly** (scheme, host, path, no trailing slash) in the
+     corresponding environment's `.env` / Render env vars — a mismatch here is the most common cause of
+     `Error 400: invalid_request` or `redirect_uri_mismatch`.
+5. Copy the generated **Client ID** and **Client Secret** into the backend `.env` (local) and into Render's
+   Environment tab (production).
+6. While the OAuth consent screen is in **Testing** mode (the default), only the Google accounts added as
+   **Test users** in step 3 can complete the consent flow — anyone else sees "Access blocked: Authorization
+   Error." Add every account you'll use to test with.
+7. In the app, a logged-in user clicks **"Connect Google Calendar"** on the Home page → redirected to Google
    consent → redirected back to `/calendar-connected`. Refresh tokens are stored on the `User` document.
-7. Booking confirmation, cancellation, and leave-day cancellation all create/delete events on **both** the
+8. Booking confirmation, cancellation, and leave-day cancellation all create/delete events on **both** the
    patient's and doctor's calendars — but only for users who've connected their calendar. Non-connected users
    simply don't get a calendar event; nothing else in the flow is blocked.
 
@@ -240,7 +267,46 @@ Model is configurable via `GROQ_MODEL` (defaults to `llama-3.3-70b-versatile`).
 
 ---
 
-## 8. Known simplifications / follow-ups
+## 8. Deployment steps (Render + Vercel)
+
+This is how the live deployment linked at the top of this README was set up.
+
+### Database — MongoDB Atlas
+1. Create a free (M0) cluster, a database user, and allow network access from `0.0.0.0/0` (required since
+   Render's outbound IPs aren't static).
+2. Connection string format: `mongodb+srv://<user>:<password>@<cluster>.mongodb.net/healthcare_appointments?appName=Cluster0`
+   — note the database name (`healthcare_appointments`) must be included in the path.
+
+### Backend — Render
+1. New → Web Service → connect the GitHub repo → **Root Directory: `backend`**, Build: `npm install`,
+   Start: `npm start`.
+2. Set every variable from `backend/.env.example` under Environment, including:
+   - `MONGO_URI` (Atlas string above)
+   - `CLIENT_URL` = the Vercel URL, **no trailing slash** (a trailing slash breaks CORS — the browser
+     compares origins as exact strings)
+   - `GOOGLE_REDIRECT_URI` = `https://<render-service>.onrender.com/api/calendar/oauth/callback`
+     (must exactly match what's registered in Google Cloud Console, see §6)
+3. After first deploy, seed the admin account once via Render's **Shell** tab (`npm run seed`), or run it
+   locally with `MONGO_URI` pointed at Atlas (see §2 setup guide).
+
+### Frontend — Vercel
+1. New Project → same repo → **Root Directory: `frontend`** (Vite preset auto-detected).
+2. Environment variable: `VITE_API_URL` = `https://<render-service>.onrender.com/api` (must end in `/api`;
+   changing this after the first build requires a manual redeploy, since Vite inlines env vars at build time).
+3. `frontend/vercel.json` adds a SPA rewrite (`/(.*) → /index.html`) — without it, direct navigation or a
+   page refresh on any client-side route (e.g. `/calendar-connected`, `/patient/appointments`) 404s, because
+   Vercel's static host looks for a matching file instead of letting React Router handle the path.
+
+### Wiring the two together
+- Render's `CLIENT_URL` must equal the live Vercel URL exactly (no trailing slash).
+- Vercel's `VITE_API_URL` must equal the live Render URL + `/api` exactly.
+- Google Cloud Console's Authorized redirect URI must equal Render's `GOOGLE_REDIRECT_URI` exactly.
+- Any change to a Render or Vercel environment variable requires a redeploy on that respective platform to
+  take effect — saving alone is not enough.
+
+---
+
+## 9. Known simplifications / follow-ups
 
 - Slot times are stored as strings in the doctor's local time; a production version should store an explicit
   timezone per doctor and convert consistently for cross-timezone patients.
