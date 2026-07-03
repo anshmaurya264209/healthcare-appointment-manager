@@ -17,7 +17,10 @@ connectDB();
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL || '*', credentials: true }));
+// Normalize CLIENT_URL: strip any trailing slash so "https://x.app/" and "https://x.app"
+// are treated as the same origin (browsers compare CORS origins as exact strings).
+const clientOrigin = (process.env.CLIENT_URL || '*').replace(/\/+$/, '');
+app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json());
 
 // Basic protection against brute force / abuse on auth endpoints
